@@ -493,6 +493,7 @@ try
     let use_height = 0
     let use_term = 0
   endif
+  let use_term = !get(g:, 'fzf_no_term', 0) && use_term
   if use_term
     let optstr .= ' --no-height'
   elseif use_height
