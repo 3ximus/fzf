@@ -159,7 +159,7 @@ function s:get_version(bin)
   if has_key(s:versions, a:bin)
     return s:versions[a:bin]
   end
-  let command = a:bin . ' --version'
+  let command = a:bin . ' --version --no-height'
   let output = systemlist(command)
   if v:shell_error || empty(output)
     return ''
@@ -419,13 +419,13 @@ function! fzf#wrap(...)
   endif
 
   " Action: g:fzf_action
-  if !s:has_any(opts, ['sink', 'sink*'])
+  if !s:has_any(opts, ['sink', 'sinklist', 'sink*'])
     let opts._action = get(g:, 'fzf_action', s:default_action)
     let opts.options .= ' --expect='.join(keys(opts._action), ',')
-    function! opts.sink(lines) abort
+    function! opts.sinklist(lines) abort
       return s:common_sink(self._action, a:lines)
     endfunction
-    let opts['sink*'] = remove(opts, 'sink')
+    let opts['sink*'] = opts.sinklist " For backward compatibility
   endif
 
   return opts
@@ -520,7 +520,8 @@ finally
     if len(prev_default_command)
       let $FZF_DEFAULT_COMMAND = prev_default_command
     else
-      execute 'unlet $FZF_DEFAULT_COMMAND'
+      let $FZF_DEFAULT_COMMAND = ''
+      silent! execute 'unlet $FZF_DEFAULT_COMMAND'
     endif
   endif
   let [&shell, &shellslash, &shellcmdflag, &shellxquote] = [shell, shellslash, shellcmdflag, shellxquote]
@@ -944,6 +945,8 @@ function! s:callback(dict, lines) abort
     endif
     if has_key(a:dict, 'sink*')
       call a:dict['sink*'](a:lines)
+    elseif has_key(a:dict, 'sinklist')
+      call a:dict['sinklist'](a:lines)
     endif
   catch
     if stridx(v:exception, ':E325:') < 0
