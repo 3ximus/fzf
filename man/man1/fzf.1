@@ -57,9 +57,9 @@ Choose scoring scheme tailored for different types of input.
 .br
 .BR default "  Generic scoring scheme designed to work well with any type of input"
 .br
-.BR path "     Scoring scheme for paths (additional bonus point only after path separator)
+.BR path "     Scoring scheme well suited for file paths
 .br
-.BR history "  Scoring scheme for command history (no additional bonus points).
+.BR history "  Scoring scheme well suited for command history or any input where chronological ordering is important
          Sets \fB--tiebreak=index\fR as well.
 .br
 .TP
@@ -591,6 +591,18 @@ e.g.
         echo "$i"
         sleep 0.01
       done'\fR
+
+Since 0.43.0, fzf has experimental support for Kitty graphics protocol,
+so if you use Kitty, you can make fzf display an image in the preview window.
+
+e.g.
+      \fBfzf --preview='
+        if file --mime-type {} | grep -qF "image/"; then
+          kitty icat --clear --transfer-mode=memory --stdin=no --place=${FZF_PREVIEW_COLUMNS}x${FZF_PREVIEW_LINES}@0x0 {}
+        else
+          bat --color=always {}
+        fi
+      '\fR
 .RE
 
 .TP
@@ -759,6 +771,21 @@ Read input delimited by ASCII NUL characters instead of newline characters
 .B "--print0"
 Print output delimited by ASCII NUL characters instead of newline characters
 .TP
+.B "--no-clear"
+Do not clear finder interface on exit. If fzf was started in full screen mode,
+it will not switch back to the original screen, so you'll have to manually run
+\fBtput rmcup\fR to return. This option can be used to avoid flickering of the
+screen when your application needs to start fzf multiple times in order. (Note
+that in most cases, it is preferable to use \fBreload\fR action instead.)
+
+e.g.
+     \fBfoo=$(seq 100 | fzf --no-clear) || (
+       # Need to manually switch back to the main screen when cancelled
+       tput rmcup
+       exit 1
+     ) && seq "$foo" 100 | fzf
+
+.TP
 .B "--sync"
 Synchronous search for multi-staged filtering. If specified, fzf will launch
 ncurses finder only after the input stream is complete.
@@ -779,6 +806,9 @@ set, the server would require sending an API key with the same value in the
 e.g.
      \fB# Start HTTP server on port 6266
      fzf --listen 6266
+
+     # Get program state in JSON format (experimental)
+     curl localhost:6266
 
      # Send action to the server
      curl -XPOST localhost:6266 -d 'reload(seq 100)+change-prompt(hundred> )'

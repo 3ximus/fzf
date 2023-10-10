@@ -2,6 +2,7 @@ package fzf
 
 import (
 	"bufio"
+	"encoding/json"
 	"fmt"
 	"io"
 	"math"
@@ -50,6 +51,7 @@ var whiteSuffix *regexp.Regexp
 var offsetComponentRegex *regexp.Regexp
 var offsetTrimCharsRegex *regexp.Regexp
 var activeTempFiles []string
+var passThroughRegex *regexp.Regexp
 
 const clearCode string = "\x1b[2J"
 
@@ -59,6 +61,11 @@ func init() {
 	offsetComponentRegex = regexp.MustCompile(`([+-][0-9]+)|(-?/[1-9][0-9]*)`)
 	offsetTrimCharsRegex = regexp.MustCompile(`[^0-9/+-]`)
 	activeTempFiles = []string{}
+
+	// Parts of the preview output that should be passed through to the terminal
+	// * https://github.com/tmux/tmux/wiki/FAQ#what-is-the-passthrough-escape-sequence-and-how-do-i-use-it
+	// * https://sw.kovidgoyal.net/kitty/graphics-protocol
+	passThroughRegex = regexp.MustCompile(`\x1bPtmux;\x1b\x1b.*?[^\x1b]\x1b\\|\x1b_G.*?\x1b\\`)
 }
 
 type jumpMode int
@@ -143,6 +150,24 @@ type fitpad struct {
 var emptyLine = itemLine{}
 
 type labelPrinter func(tui.Window, int)
+
+type StatusItem struct {
+	Index int    `json:"index"`
+	Text  string `json:"text"`
+}
+
+type Status struct {
+	Reading    bool         `json:"reading"`
+	Progress   int          `json:"progress"`
+	Query      string       `json:"query"`
+	Position   int          `json:"position"`
+	Sort       bool         `json:"sort"`
+	TotalCount int          `json:"totalCount"`
+	MatchCount int          `json:"matchCount"`
+	Current    *StatusItem  `json:"current"`
+	Matches    []StatusItem `json:"matches"`
+	Selected   []StatusItem `json:"selected"`
+}
 
 // Terminal represents terminal input/output
 type Terminal struct {
@@ -245,7 +270,8 @@ type Terminal struct {
 	sigstop            bool
 	startChan          chan fitpad
 	killChan           chan int
-	serverChan         chan []*action
+	serverInputChan    chan []*action
+	serverOutputChan   chan string
 	eventChan          chan tui.Event
 	slab               *util.Slab
 	theme              *tui.ColorTheme
@@ -398,6 +424,7 @@ const (
 	actUnbind
 	actRebind
 	actBecome
+	actResponse
 )
 
 type placeholderFlags struct {
@@ -657,7 +684,8 @@ func NewTerminal(opts *Options, eventBox *util.EventBox) *Terminal {
 		theme:              opts.Theme,
 		startChan:          make(chan fitpad, 1),
 		killChan:           make(chan int),
-		serverChan:         make(chan []*action, 10),
+		serverInputChan:    make(chan []*action, 10),
+		serverOutputChan:   make(chan string),
 		eventChan:          make(chan tui.Event, 1),
 		tui:                renderer,
 		initFunc:           func() { renderer.Init() },
@@ -703,7 +731,7 @@ func NewTerminal(opts *Options, eventBox *util.EventBox) *Terminal {
 	_, t.hasLoadActions = t.keymap[tui.Load.AsEvent()]
 
 	if t.listenPort != nil {
-		err, port := startHttpServer(*t.listenPort, t.serverChan)
+		err, port := startHttpServer(*t.listenPort, t.serverInputChan, t.serverOutputChan)
 		if err != nil {
 			errorExit(err.Error())
 		}
@@ -781,7 +809,7 @@ func (t *Terminal) ansiLabelPrinter(str string, color *tui.ColorPair, fill bool)
 				window.CPrint(*color, str)
 			}
 		}
-		return printFn, len(text)
+		return printFn, length
 	}
 
 	// Printer that correctly handles ANSI color codes and tab characters
@@ -1936,7 +1964,13 @@ func (t *Terminal) renderPreviewText(height int, lines []string, lineNo int, unc
 		if ansi != nil {
 			ansi.lbg = -1
 		}
-		line = strings.TrimRight(line, "\r\n")
+
+		passThroughs := passThroughRegex.FindAllString(line, -1)
+		if passThroughs != nil {
+			line = passThroughRegex.ReplaceAllString(line, "")
+		}
+		line = strings.TrimLeft(strings.TrimRight(line, "\r\n"), "\r")
+
 		if lineNo >= height || t.pwindow.Y() == height-1 && t.pwindow.X() > 0 {
 			t.previewed.filled = true
 			t.previewer.scrollable = true
@@ -1948,6 +1982,9 @@ func (t *Terminal) renderPreviewText(height int, lines []string, lineNo int, unc
 				x := t.pwindow.X()
 				t.renderPreviewSpinner()
 				t.pwindow.Move(y, x)
+			}
+			for _, passThrough := range passThroughs {
+				t.tui.PassThrough(passThrough)
 			}
 			var fillRet tui.FillReturn
 			prefixWidth := 0
@@ -2813,7 +2850,7 @@ func (t *Terminal) Loop() {
 							t.printInfo()
 						}
 						if onFocus, prs := t.keymap[tui.Focus.AsEvent()]; prs && focusChanged {
-							t.serverChan <- onFocus
+							t.serverInputChan <- onFocus
 						}
 						if focusChanged || version != t.version {
 							version = t.version
@@ -2925,7 +2962,7 @@ func (t *Terminal) Loop() {
 			select {
 			case event = <-t.eventChan:
 				needBarrier = !event.Is(tui.Load, tui.One, tui.Zero)
-			case actions = <-t.serverChan:
+			case actions = <-t.serverInputChan:
 				event = tui.Invalid.AsEvent()
 				needBarrier = false
 			}
@@ -3000,6 +3037,8 @@ func (t *Terminal) Loop() {
 		doAction = func(a *action) bool {
 			switch a.t {
 			case actIgnore:
+			case actResponse:
+				t.serverOutputChan <- t.dumpStatus(parseGetParams(a.a))
 			case actBecome:
 				valid, list := t.buildPlusList(a.a, false)
 				if valid {
@@ -3767,4 +3806,49 @@ func (t *Terminal) maxItems() int {
 		max++
 	}
 	return util.Max(max, 0)
+}
+
+func (t *Terminal) dumpItem(i *Item) StatusItem {
+	if i == nil {
+		return StatusItem{}
+	}
+	return StatusItem{
+		Index: int(i.Index()),
+		Text:  i.AsString(t.ansi),
+	}
+}
+
+func (t *Terminal) dumpStatus(params getParams) string {
+	selectedItems := t.sortSelected()
+	selected := make([]StatusItem, util.Max(0, util.Min(params.limit, len(selectedItems)-params.offset)))
+	for i := range selected {
+		selected[i] = t.dumpItem(selectedItems[i+params.offset].item)
+	}
+
+	matches := make([]StatusItem, util.Max(0, util.Min(params.limit, t.merger.Length()-params.offset)))
+	for i := range matches {
+		matches[i] = t.dumpItem(t.merger.Get(i + params.offset).item)
+	}
+
+	var current *StatusItem
+	currentItem := t.currentItem()
+	if currentItem != nil {
+		item := t.dumpItem(currentItem)
+		current = &item
+	}
+
+	dump := Status{
+		Reading:    t.reading,
+		Progress:   t.progress,
+		Query:      string(t.input),
+		Position:   t.cy,
+		Sort:       t.sort,
+		TotalCount: t.count,
+		MatchCount: t.merger.Length(),
+		Current:    current,
+		Matches:    matches,
+		Selected:   selected,
+	}
+	bytes, _ := json.Marshal(&dump) // TODO: Errors?
+	return string(bytes)
 }

@@ -3,6 +3,30 @@ CHANGELOG
 
 0.43.0
 ------
+- Experimental, partial support for Kitty image protocol in the preview window
+  ```sh
+  fzf --preview='
+    if file --mime-type {} | grep -qF image/; then
+      # --transfer-mode=memory is the fastest option but if you want fzf to be able
+      # to redraw the image on terminal resize or on 'change-preview-window',
+      # you need to use --transfer-mode=stream.
+      kitty icat --clear --transfer-mode=memory --stdin=no --place=${FZF_PREVIEW_COLUMNS}x${FZF_PREVIEW_LINES}@0x0 {}
+    else
+      bat --color=always {}
+    fi
+  '
+  ```
+- `--listen` server can report program state in JSON format (`GET /`)
+  ```sh
+  # fzf server started in "headless" mode
+  fzf --listen 6266 2> /dev/null
+
+  # Get program state
+  curl localhost:6266 | jq .
+
+  # Increase the number of items returned (default: 100)
+  curl localhost:6266?limit=1000 | jq .
+  ```
 - `--listen` server can be secured by setting `$FZF_API_KEY` environment
   variable.
   ```sh
@@ -15,6 +39,12 @@ CHANGELOG
   curl localhost:6266 -H "x-api-key: $FZF_API_KEY" -d 'change-query(yo)'
   ```
 - Added `toggle-header` action
+- Shell extensions
+    - bash key bindings no longer requires perl; it will use awk or mawk
+      instead if perl is not found
+    - Basic context-aware completion for ssh command
+    - Applied `--scheme=path` for better ordering of the result
+- Bug fixes and improvements
 
 0.42.0
 ------
@@ -368,7 +398,7 @@ CHANGELOG
           (sleep 2; seq 1000) | fzf --height ~50%
           ```
 - Fixed tcell renderer used to render full-screen fzf on Windows
-- `--no-clear` is deprecated. Use `reload` action instead.
+- ~~`--no-clear` is deprecated. Use `reload` action instead.~~
 
 0.33.0
 ------
