@@ -100,7 +100,7 @@ const (
 
 func (r *FullscreenRenderer) PassThrough(str string) {
 	// No-op
-	// https://github.com/gdamore/tcell/issues/363#issuecomment-680665073
+	// https://github.com/gdamore/tcell/pull/650#issuecomment-1806442846
 }
 
 func (r *FullscreenRenderer) Resize(maxHeightFunc func(int) int) {}
@@ -172,6 +172,10 @@ func (r *FullscreenRenderer) Init() {
 	initTheme(r.theme, r.defaultTheme(), r.forceBlack)
 }
 
+func (r *FullscreenRenderer) Top() int {
+	return 0
+}
+
 func (r *FullscreenRenderer) MaxX() int {
 	ncols, _ := _screen.Size()
 	return int(ncols)
@@ -201,6 +205,12 @@ func (r *FullscreenRenderer) NeedScrollbarRedraw() bool {
 
 func (r *FullscreenRenderer) Refresh() {
 	// noop
+}
+
+// TODO: Pixel width and height not implemented
+func (r *FullscreenRenderer) Size() TermSize {
+	cols, lines := _screen.Size()
+	return TermSize{lines, cols, 0, 0}
 }
 
 func (r *FullscreenRenderer) GetChar() Event {
@@ -541,7 +551,13 @@ func fill(x, y, w, h int, n ColorPair, r rune) {
 }
 
 func (w *TcellWindow) Erase() {
+	w.drawBorder(false)
 	fill(w.left-1, w.top, w.width+1, w.height-1, w.normal, ' ')
+}
+
+func (w *TcellWindow) EraseMaybe() bool {
+	w.Erase()
+	return true
 }
 
 func (w *TcellWindow) Enclose(y int, x int) bool {
@@ -690,6 +706,10 @@ func (w *TcellWindow) CFill(fg Color, bg Color, a Attr, str string) FillReturn {
 		bg = w.normal.Bg()
 	}
 	return w.fillString(str, NewColorPair(fg, bg, a))
+}
+
+func (w *TcellWindow) DrawBorder() {
+	w.drawBorder(false)
 }
 
 func (w *TcellWindow) DrawHBorder() {
